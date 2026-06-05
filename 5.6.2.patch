@@ -1,0 +1,235 @@
+diff --git a/__tests__/idGenerator.test.js b/__tests__/idGenerator.test.js
+new file mode 100644
+index 0000000..12a9d39
+--- /dev/null
++++ b/__tests__/idGenerator.test.js
+@@ -0,0 +1,133 @@
++'use strict';
++
++var assert = require('assert')
++var express = require('express')
++var request = require('supertest')
++var session = require('../')
++var idGenerator = require('../src/utils/idGenerator')
++
++describe('idGenerator', function () {
++  describe('generateId', function () {
++    it('should generate unique ids with the expected format', function () {
++      var ids = Array.from({ length: 100 }, function () {
++        return idGenerator.generateId()
++      })
++
++      expect(new Set(ids).size).toBe(ids.length)
++      ids.forEach(function (value) {
++        expect(value).toMatch(/^[a-z0-9]+-[a-f0-9]{24}$/)
++      })
++    })
++  })
++
++  describe('createCustomGenerator', function () {
++    it('should support prefix + timestamp + random string rules', function () {
++      var generator = idGenerator.createCustomGenerator({
++        prefix: 'sess_',
++        timestampProvider: function () {
++          return '1710000000000'
++        },
++        randomProvider: function () {
++          return 'abc123xy'
++        }
++      })
++
++      expect(generator()).toBe('sess_1710000000000abc123xy')
++    })
++
++    it('should create a usable generator for empty rules', function () {
++      var generator = idGenerator.createCustomGenerator({})
++      var value = generator()
++
++      expect(value).toMatch(/^\d{13}[a-f0-9]{8}$/)
++    })
++
++    it('should reject invalid rule containers and field types', function () {
++      expect(function () {
++        idGenerator.createCustomGenerator('invalid')
++      }).toThrow(/rules must be an object/)
++
++      expect(function () {
++        idGenerator.createCustomGenerator({ prefix: 123 })
++      }).toThrow(/prefix must be a string/)
++
++      expect(function () {
++        idGenerator.createCustomGenerator({ randomLength: 0 })
++      }).toThrow(/randomLength must be a positive integer/)
++
++      expect(function () {
++        idGenerator.createCustomGenerator({ timestampProvider: 'now' })
++      }).toThrow(/timestampProvider must be a function/)
++
++      expect(function () {
++        idGenerator.createCustomGenerator({ randomProvider: 'rand' })
++      }).toThrow(/randomProvider must be a function/)
++    })
++
++    it('should reject empty runtime values from providers', function () {
++      var emptyTimestampGenerator = idGenerator.createCustomGenerator({
++        timestampProvider: function () {
++          return ''
++        },
++        randomProvider: function () {
++          return 'abcd1234'
++        }
++      })
++
++      var emptyRandomGenerator = idGenerator.createCustomGenerator({
++        timestampProvider: function () {
++          return '1710000000000'
++        },
++        randomProvider: function () {
++          return ''
++        }
++      })
++
++      expect(function () {
++        emptyTimestampGenerator()
++      }).toThrow(/timestamp value must not be empty/)
++
++      expect(function () {
++        emptyRandomGenerator()
++      }).toThrow(/random value must not be empty/)
++    })
++  })
++
++  describe('express-session genid integration', function () {
++    it('should use the custom generator inside the session middleware', function (done) {
++      var app = express()
++      var generator = idGenerator.createCustomGenerator({
++        prefix: 'sess_',
++        timestampProvider: function (req) {
++          return req.get('x-session-ts')
++        },
++        randomProvider: function (req) {
++          return req.get('x-session-rand')
++        }
++      })
++
++      app.use(session({
++        secret: 'keyboard cat',
++        resave: false,
++        saveUninitialized: true,
++        genid: generator
++      }))
++
++      app.use(function (req, res) {
++        res.json({ id: req.sessionID })
++      })
++
++      request(app)
++        .get('/')
++        .set('X-Session-Ts', '1710000000000')
++        .set('X-Session-Rand', 'abc123xy')
++        .expect(200)
++        .expect(function (res) {
++          expect(res.body.id).toBe('sess_1710000000000abc123xy')
++          expect(res.headers['set-cookie']).toBeDefined()
++          assert.ok(/connect\.sid=s%3Asess_1710000000000abc123xy\./.test(res.headers['set-cookie'][0]))
++        })
++        .end(done)
++    })
++  })
++})
+diff --git a/package.json b/package.json
+index 3638779..588787a 100644
+--- a/package.json
++++ b/package.json
+@@ -29,6 +29,7 @@
+     "eslint": "8.56.0",
+     "eslint-plugin-markdown": "3.0.1",
+     "express": "4.17.3",
++    "jest": "29.7.0",
+     "mocha": "10.8.2",
+     "nyc": "15.1.0",
+     "supertest": "6.3.4"
+@@ -43,6 +44,7 @@
+   "scripts": {
+     "lint": "eslint . && node ./scripts/lint-readme.js",
+     "test": "./test/support/gencert.sh && mocha --require test/support/env --check-leaks --no-exit --reporter spec test/",
++    "test:jest": "jest --runInBand",
+     "test-ci": "nyc --reporter=lcov --reporter=text npm test",
+     "test-cov": "nyc npm test",
+     "version": "node scripts/version-history.js && git add HISTORY.md"
+diff --git a/src/utils/idGenerator.js b/src/utils/idGenerator.js
+new file mode 100644
+index 0000000..1f4e0ef
+--- /dev/null
++++ b/src/utils/idGenerator.js
+@@ -0,0 +1,70 @@
++'use strict';
++
++var crypto = require('crypto')
++
++function createRandomSegment(length) {
++  return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length)
++}
++
++function generateId() {
++  return Date.now().toString(36) + '-' + createRandomSegment(24)
++}
++
++function createCustomGenerator(rules) {
++  var normalizedRules = rules == null ? {} : rules
++
++  if (!normalizedRules || typeof normalizedRules !== 'object' || Array.isArray(normalizedRules)) {
++    throw new TypeError('rules must be an object')
++  }
++
++  var prefix = normalizedRules.prefix == null ? '' : normalizedRules.prefix
++  var timestampProvider = normalizedRules.timestampProvider || Date.now
++  var randomLength = normalizedRules.randomLength == null ? 8 : normalizedRules.randomLength
++  var randomProvider = normalizedRules.randomProvider
++
++  if (typeof prefix !== 'string') {
++    throw new TypeError('prefix must be a string')
++  }
++
++  if (typeof timestampProvider !== 'function') {
++    throw new TypeError('timestampProvider must be a function')
++  }
++
++  if (randomProvider != null && typeof randomProvider !== 'function') {
++    throw new TypeError('randomProvider must be a function')
++  }
++
++  if (!Number.isInteger(randomLength) || randomLength <= 0) {
++    throw new TypeError('randomLength must be a positive integer')
++  }
++
++  return function customGenerator(req) {
++    var timestamp = timestampProvider(req)
++    var randomValue = randomProvider ? randomProvider(req) : createRandomSegment(randomLength)
++
++    if (typeof timestamp !== 'number' && typeof timestamp !== 'string') {
++      throw new TypeError('timestampProvider must return a number or string')
++    }
++
++    if (typeof randomValue !== 'string') {
++      throw new TypeError('randomProvider must return a string')
++    }
++
++    var normalizedTimestamp = String(timestamp).trim()
++
++    if (!normalizedTimestamp) {
++      throw new TypeError('timestamp value must not be empty')
++    }
++
++    if (!randomValue) {
++      throw new TypeError('random value must not be empty')
++    }
++
++    return prefix + normalizedTimestamp + randomValue
++  }
++}
++
++module.exports = {
++  generateId: generateId,
++  createCustomGenerator: createCustomGenerator
++}
