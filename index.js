@@ -76,6 +76,10 @@ var defer = typeof setImmediate === 'function'
  * @param {Boolean} [options.proxy]
  * @param {Boolean} [options.resave] Resave unmodified sessions back to the store
  * @param {Boolean} [options.rolling] Enable/disable rolling session expiration
+ * @param {Object} [options.adaptiveMaxAge] Adaptive maxAge extension on high-frequency access
+ * @param {Number} [options.adaptiveMaxAge.window=30000] Time window in ms to detect high-frequency access
+ * @param {Number} [options.adaptiveMaxAge.threshold=3] Number of distinct routes to trigger extension
+ * @param {Number} [options.adaptiveMaxAge.extraMaxAge=300000] Extra ms to add to maxAge when triggered
  * @param {Boolean} [options.saveUninitialized] Save uninitialized sessions to the store
  * @param {String|Array} [options.secret] Secret for signing session ID
  * @param {Object} [options.store=MemoryStore] Session store
@@ -107,6 +111,12 @@ function session(options) {
 
   // get the rolling session option
   var rollingSessions = Boolean(opts.rolling)
+
+  // get the adaptive maxAge option
+  var adaptiveMaxAgeOpts = opts.adaptiveMaxAge
+  var adaptiveWindow = (adaptiveMaxAgeOpts && adaptiveMaxAgeOpts.window) || 30000
+  var adaptiveThreshold = (adaptiveMaxAgeOpts && adaptiveMaxAgeOpts.threshold) || 3
+  var adaptiveExtraMaxAge = (adaptiveMaxAgeOpts && adaptiveMaxAgeOpts.extraMaxAge) || (5 * 60 * 1000)
 
   // get the save uninitialized session option
   var saveUninitializedSession = opts.saveUninitialized
@@ -172,6 +182,7 @@ function session(options) {
   };
 
   var storeImplementsTouch = typeof store.touch === 'function';
+  var sessionRouteMap = new Map()
 
   // register event listeners for the store to track readiness
   var storeReady = true
@@ -220,6 +231,36 @@ function session(options) {
     var originalId;
     var savedHash;
     var touched = false
+
+    function recordRouteAccess(req) {
+      if (!adaptiveMaxAgeOpts || !req.sessionID || !req.session) return
+
+      var now = Date.now()
+      var currentPath = parseUrl(req).pathname || '/'
+      var sid = req.sessionID
+
+      if (!sessionRouteMap.has(sid)) {
+        sessionRouteMap.set(sid, [])
+      }
+
+      var records = sessionRouteMap.get(sid)
+      records.push({ time: now, path: currentPath })
+
+      var filtered = records.filter(function (r) {
+        return now - r.time <= adaptiveWindow
+      })
+      sessionRouteMap.set(sid, filtered)
+
+      var distinctRoutes = {}
+      filtered.forEach(function (r) { distinctRoutes[r.path] = true })
+      var distinctCount = Object.keys(distinctRoutes).length
+
+      if (distinctCount >= adaptiveThreshold) {
+        req.session.touch()
+        req.session.cookie.maxAge += adaptiveExtraMaxAge
+        touched = true
+      }
+    }
 
     // expose store
     req.sessionStore = store;
@@ -491,6 +532,7 @@ function session(options) {
     if (!req.sessionID) {
       debug('no SID sent, generating session');
       generate();
+      recordRouteAccess(req)
       next();
       return;
     }
@@ -518,6 +560,7 @@ function session(options) {
         return
       }
 
+      recordRouteAccess(req)
       next()
     });
   };
