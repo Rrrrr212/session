@@ -55,9 +55,6 @@ exports.MemoryStore = MemoryStore;
 var warning = 'Warning: connect.session() MemoryStore is not\n'
   + 'designed for a production environment, as it will leak\n'
   + 'memory, and will not scale past a single process.';
-var DEFAULT_ADAPTIVE_MAX_AGE_WINDOW = 30 * 1000
-var DEFAULT_ADAPTIVE_MAX_AGE_THRESHOLD = 3
-var DEFAULT_ADAPTIVE_MAX_AGE_EXTENSION = 5 * 60 * 1000
 
 /**
  * Node.js 0.8+ async implementation.
@@ -110,9 +107,6 @@ function session(options) {
 
   // get the rolling session option
   var rollingSessions = Boolean(opts.rolling)
-
-  var adaptiveMaxAge = getAdaptiveMaxAgeOptions(opts.adaptiveMaxAge)
-  var sessionRouteActivity = adaptiveMaxAge ? new Map() : null
 
   // get the save uninitialized session option
   var saveUninitializedSession = opts.saveUninitialized
@@ -187,52 +181,6 @@ function session(options) {
   store.on('connect', function onconnect() {
     storeReady = true
   })
-
-  function clearSessionRouteActivity(sessionId) {
-    if (!sessionRouteActivity || typeof sessionId !== 'string') {
-      return
-    }
-
-    sessionRouteActivity.delete(sessionId)
-  }
-
-  function updateSessionRouteActivity(req, path) {
-    if (!adaptiveMaxAge || !req.session || typeof req.sessionID !== 'string') {
-      return false
-    }
-
-    var baseMaxAge = typeof req.session.cookie.originalMaxAge === 'number'
-      ? req.session.cookie.originalMaxAge
-      : req.session.cookie.maxAge
-
-    if (typeof baseMaxAge !== 'number') {
-      return false
-    }
-
-    var now = Date.now()
-    var routeActivity = sessionRouteActivity.get(req.sessionID)
-
-    if (!routeActivity) {
-      routeActivity = new Map()
-      sessionRouteActivity.set(req.sessionID, routeActivity)
-    }
-
-    routeActivity.set(path, now)
-
-    routeActivity.forEach(function(timestamp, routePath) {
-      if (now - timestamp > adaptiveMaxAge.window) {
-        routeActivity.delete(routePath)
-      }
-    })
-
-    if (routeActivity.size <= adaptiveMaxAge.threshold) {
-      return false
-    }
-
-    req.session.touch()
-    req.session.cookie.maxAge = baseMaxAge + adaptiveMaxAge.extension
-    return true
-  }
 
   return function session(req, res, next) {
     // self-awareness
@@ -374,7 +322,6 @@ function session(options) {
       if (shouldDestroy(req)) {
         // destroy session
         debug('destroying');
-        clearSessionRouteActivity(req.sessionID)
         store.destroy(req.sessionID, function ondestroy(err) {
           if (err) {
             defer(next, err);
@@ -540,19 +487,11 @@ function session(options) {
         : rollingSessions || req.session.cookie.expires != null && isModified(req.session);
     }
 
-    function finalize() {
-      if (updateSessionRouteActivity(req, originalPath)) {
-        touched = true
-      }
-
-      next()
-    }
-
     // generate a session if the browser doesn't send a sessionID
     if (!req.sessionID) {
       debug('no SID sent, generating session');
       generate();
-      finalize();
+      next();
       return;
     }
 
@@ -579,34 +518,10 @@ function session(options) {
         return
       }
 
-      finalize()
+      next()
     });
   };
 };
-
-function getAdaptiveMaxAgeOptions(options) {
-  if (!options) {
-    return null
-  }
-
-  if (options === true) {
-    return {
-      extension: DEFAULT_ADAPTIVE_MAX_AGE_EXTENSION,
-      threshold: DEFAULT_ADAPTIVE_MAX_AGE_THRESHOLD,
-      window: DEFAULT_ADAPTIVE_MAX_AGE_WINDOW
-    }
-  }
-
-  if (typeof options !== 'object') {
-    throw new TypeError('adaptiveMaxAge option must be a boolean or object')
-  }
-
-  return {
-    extension: typeof options.extension === 'number' ? options.extension : DEFAULT_ADAPTIVE_MAX_AGE_EXTENSION,
-    threshold: typeof options.threshold === 'number' ? options.threshold : DEFAULT_ADAPTIVE_MAX_AGE_THRESHOLD,
-    window: typeof options.window === 'number' ? options.window : DEFAULT_ADAPTIVE_MAX_AGE_WINDOW
-  }
-}
 
 /**
  * Generate a session ID for a new session.
