@@ -76,7 +76,6 @@ var defer = typeof setImmediate === 'function'
  * @param {Boolean} [options.proxy]
  * @param {Boolean} [options.resave] Resave unmodified sessions back to the store
  * @param {Boolean} [options.rolling] Enable/disable rolling session expiration
- * @param {Boolean} [options.adaptiveMaxAge] Max age in minutes to extend when adaptive high-frequency access detected (default: disabled)
  * @param {Boolean} [options.saveUninitialized] Save uninitialized sessions to the store
  * @param {String|Array} [options.secret] Secret for signing session ID
  * @param {Object} [options.store=MemoryStore] Session store
@@ -108,9 +107,6 @@ function session(options) {
 
   // get the rolling session option
   var rollingSessions = Boolean(opts.rolling)
-
-  // get the adaptive max age option
-  var adaptiveMaxAge = opts.adaptiveMaxAge
 
   // get the save uninitialized session option
   var saveUninitializedSession = opts.saveUninitialized
@@ -177,11 +173,6 @@ function session(options) {
 
   var storeImplementsTouch = typeof store.touch === 'function';
 
-  // track adaptive session route access
-  var adaptiveRoutes = typeof adaptiveMaxAge === 'number' && adaptiveMaxAge > 0
-    ? new Map()
-    : null
-
   // register event listeners for the store to track readiness
   var storeReady = true
   store.on('disconnect', function ondisconnect() {
@@ -243,27 +234,6 @@ function session(options) {
         return;
       }
 
-      // record adaptive route access
-      if (adaptiveRoutes && req.sessionID) {
-        var sid = req.sessionID
-        var now = Date.now()
-        var path = originalPath
-        var entries = adaptiveRoutes.get(sid)
-        if (!entries) {
-          entries = []
-          adaptiveRoutes.set(sid, entries)
-        }
-        entries.push({ path: path, timestamp: now })
-
-        var cutoff = now - 30000
-        entries = entries.filter(function (e) { return e.timestamp > cutoff })
-        if (entries.length > 0) {
-          adaptiveRoutes.set(sid, entries)
-        } else {
-          adaptiveRoutes.delete(sid)
-        }
-      }
-
       if (!shouldSetCookie(req)) {
         return;
       }
@@ -277,25 +247,6 @@ function session(options) {
       if (!touched) {
         // touch session
         req.session.touch()
-
-        // adaptive max age
-        if (adaptiveRoutes && req.sessionID) {
-          var adaptiveEntries = adaptiveRoutes.get(req.sessionID)
-          if (adaptiveEntries) {
-            var adaptiveNow = Date.now()
-            var adaptiveCutoff = adaptiveNow - 30000
-            var uniquePaths = {}
-            for (var i = 0; i < adaptiveEntries.length; i++) {
-              if (adaptiveEntries[i].timestamp > adaptiveCutoff) {
-                uniquePaths[adaptiveEntries[i].path] = true
-              }
-            }
-            if (Object.keys(uniquePaths).length > 3) {
-              req.session.cookie.maxAge = req.session.cookie.originalMaxAge + (adaptiveMaxAge * 60000)
-            }
-          }
-        }
-
         touched = true
       }
 
@@ -371,12 +322,6 @@ function session(options) {
       if (shouldDestroy(req)) {
         // destroy session
         debug('destroying');
-
-        // clean up adaptive route tracking
-        if (adaptiveRoutes && req.sessionID) {
-          adaptiveRoutes.delete(req.sessionID)
-        }
-
         store.destroy(req.sessionID, function ondestroy(err) {
           if (err) {
             defer(next, err);
@@ -398,25 +343,6 @@ function session(options) {
       if (!touched) {
         // touch session
         req.session.touch()
-
-        // adaptive max age
-        if (adaptiveRoutes && req.sessionID) {
-          var adaptiveEntries = adaptiveRoutes.get(req.sessionID)
-          if (adaptiveEntries) {
-            var adaptiveNow = Date.now()
-            var adaptiveCutoff = adaptiveNow - 30000
-            var uniquePaths = {}
-            for (var i = 0; i < adaptiveEntries.length; i++) {
-              if (adaptiveEntries[i].timestamp > adaptiveCutoff) {
-                uniquePaths[adaptiveEntries[i].path] = true
-              }
-            }
-            if (Object.keys(uniquePaths).length > 3) {
-              req.session.cookie.maxAge = req.session.cookie.originalMaxAge + (adaptiveMaxAge * 60000)
-            }
-          }
-        }
-
         touched = true
       }
 
