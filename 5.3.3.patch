@@ -1,0 +1,76 @@
+diff --git a/src/middlewares/session.js b/src/middlewares/session.js
+new file mode 100644
+index 0000000..54ea9c4
+--- /dev/null
++++ b/src/middlewares/session.js
+@@ -0,0 +1,70 @@
++const session = require('express-session');
++const crypto = require('crypto');
++
++/**
++ * 自定义 genid 函数
++ * 格式：userId_timestamp_random
++ */
++const generateSessionId = (req) => {
++  // 尝试从请求体或请求上下文中获取 userId
++  // 在用户未登录或尚未挂载 userId 时，使用 'anonymous' 兜底
++  const userId = (req.body && req.body.userId) || (req.user && req.user.id) || 'anonymous';
++  const timestamp = Date.now();
++  const random = crypto.randomBytes(4).toString('hex'); // 8位随机字符
++
++  const newSessionId = `${userId}_${timestamp}_${random}`;
++  
++  console.log(`[Session Debug] 🔄 生成新 Session ID: ${newSessionId}`);
++  return newSessionId;
++};
++
++// 初始化 session 中间件
++const sessionMiddleware = session({
++  secret: 'xxx', // 建议在生产环境中通过环境变量传入，例如 process.env.SESSION_SECRET
++  resave: false,
++  saveUninitialized: false,
++  genid: generateSessionId,
++  // 生产环境强烈建议配置独立的 Store（如 RedisStore），避免内存泄漏和重启导致会话丢失
++  // store: new RedisStore({ client: redisClient }),
++  cookie: {
++    // maxAge: 1000 * 60 * 60 * 24, // 建议显式设置 cookie 过期时间
++    // secure: process.env.NODE_ENV === 'production', // 生产环境建议开启
++    // httpOnly: true,
++  }
++});
++
++/**
++ * 包装 Session 中间件，增加 ID 生成与验证过程的调试日志输出
++ */
++const sessionWithDebug = (req, res, next) => {
++  // 获取请求携带的默认 cookie（express-session 默认为 connect.sid）
++  // 注意：需要确保前面已经使用了 cookie-parser，或者手动解析 headers
++  const incomingCookie = req.headers.cookie || '';
++  const hasSid = incomingCookie.includes('connect.sid');
++
++  if (hasSid) {
++    console.log(`[Session Debug] 📥 收到请求，客户端已携带 Session Cookie (connect.sid)`);
++  } else {
++    console.log(`[Session Debug] 🆕 收到请求，客户端未携带 Session Cookie`);
++  }
++
++  // 执行 express-session 逻辑
++  sessionMiddleware(req, res, () => {
++    console.log(`[Session Debug] ✅ Session 中间件执行完毕，当前绑定的 Session ID: ${req.sessionID}`);
++
++    if (req.session) {
++      console.log(`[Session Debug] 🔍 会话验证通过，当前 req.session.user: ${JSON.stringify(req.session.user || null)}`);
++
++      // 异常排查：如果携带了 Cookie，但解析后 user 不存在，说明可能发生了会话丢失
++      if (hasSid && req.session.user === undefined) {
++        console.warn(`[Session Debug] ⚠️ 警告：客户端携带了 Cookie，但 req.session.user 丢失（undefined）。这通常是因为 Store 中数据被清理/过期，或者服务端重启（若使用 MemoryStore）。`);
++      }
++    } else {
++      console.error(`[Session Debug] ❌ 错误：会话未能正确加载，req.session 为 undefined`);
++    }
++
++    next();
++  });
++};
++
++module.exports = sessionWithDebug;
