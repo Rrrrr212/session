@@ -1,0 +1,91 @@
+diff --git a/src/middlewares/session.js b/src/middlewares/session.js
+new file mode 100644
+index 0000000..2943b69
+--- /dev/null
++++ b/src/middlewares/session.js
+@@ -0,0 +1,85 @@
++const session = require('express-session');
++
++// 1. 用 Map 记录每个 session 的路由访问时间和路径
++// Key: sessionId, Value: Array of { path, time }
++const sessionHistory = new Map();
++
++// 定期清理过期的记录，防止内存泄漏（每分钟执行一次）
++setInterval(() => {
++  const now = Date.now();
++  for (const [sessionId, history] of sessionHistory.entries()) {
++    const validHistory = history.filter(record => now - record.time <= 30000);
++    if (validHistory.length === 0) {
++      sessionHistory.delete(sessionId);
++    } else {
++      sessionHistory.set(sessionId, validHistory);
++    }
++  }
++}, 60000).unref();
++
++/**
++ * 导出一个包装后的 session 中间件
++ */
++module.exports = function sessionMiddleware(options = {}) {
++  // 提取 adaptiveMaxAge 选项，默认值为 false
++  const isAdaptiveMaxAgeEnabled = options.adaptiveMaxAge === true;
++
++  // 创建底层 express-session 实例，保留原有 rolling 逻辑
++  const baseSession = session({
++    ...options,
++    rolling: true,
++  });
++
++  return (req, res, next) => {
++    // 先执行基础 session 中间件
++    baseSession(req, res, () => {
++      // 如果 session 尚未初始化或未开启自适应过期特性，则直接跳过
++      if (!req.session || !req.sessionID || !isAdaptiveMaxAgeEnabled) {
++        return next();
++      }
++
++      const sessionId = req.sessionID;
++      const currentPath = req.path;
++      const currentTime = Date.now();
++
++      // 初始化当前 session 的访问记录
++      if (!sessionHistory.has(sessionId)) {
++        sessionHistory.set(sessionId, []);
++      }
++
++      const history = sessionHistory.get(sessionId);
++
++      // 过滤出最近 30 秒内的访问记录
++      const recentHistory = history.filter(record => currentTime - record.time <= 30000);
++      
++      // 记录本次访问
++      recentHistory.push({ path: currentPath, time: currentTime });
++      sessionHistory.set(sessionId, recentHistory);
++
++      // 统计最近 30 秒内访问的不同路由数量
++      const uniquePaths = new Set(recentHistory.map(record => record.path));
++
++      // 2. 检测到高频访问（30秒内超过3个不同路由）
++      if (uniquePaths.size > 3) {
++        // 增加 5 分钟 (300,000 毫秒)
++        const EXTENSION_TIME = 5 * 60 * 1000;
++        
++        // 更新 maxAge
++        if (req.session.cookie.maxAge) {
++          req.session.cookie.maxAge += EXTENSION_TIME;
++        } else {
++          // 如果之前没有明确 maxAge，则基于当前时间设置
++          req.session.cookie.maxAge = EXTENSION_TIME;
++        }
++
++        // 调用 touch() 强制更新/保持 session 存活
++        req.session.touch();
++
++        // 重置该 session 的记录，防止在 30 秒内连续无限延长
++        sessionHistory.delete(sessionId);
++      }
++
++      next();
++    });
++  };
++};
