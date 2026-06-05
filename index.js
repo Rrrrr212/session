@@ -79,6 +79,7 @@ var defer = typeof setImmediate === 'function'
  * @param {Boolean} [options.saveUninitialized] Save uninitialized sessions to the store
  * @param {String|Array} [options.secret] Secret for signing session ID
  * @param {Object} [options.store=MemoryStore] Session store
+ * @param {Boolean} [options.adaptiveMaxAge] Enable adaptive maxAge extending when high frequency access detected
  * @param {String} [options.unset]
  * @return {Function} middleware
  * @public
@@ -108,11 +109,32 @@ function session(options) {
   // get the rolling session option
   var rollingSessions = Boolean(opts.rolling)
 
+  // get the adaptive maxAge option
+  var adaptiveMaxAge = opts.adaptiveMaxAge
+
   // get the save uninitialized session option
   var saveUninitializedSession = opts.saveUninitialized
 
   // get the cookie signing secret
   var secret = opts.secret
+
+  // Map to track route access for adaptive maxAge
+  var sessionRouteTracker = new Map()
+
+  // Cleanup old entries periodically
+  setInterval(function() {
+    var now = Date.now()
+    for (var [sid, routes] of sessionRouteTracker) {
+      var filteredRoutes = routes.filter(function(route) {
+        return now - route.time <= 30000 // 30 seconds
+      })
+      if (filteredRoutes.length === 0) {
+        sessionRouteTracker.delete(sid)
+      } else {
+        sessionRouteTracker.set(sid, filteredRoutes)
+      }
+    }
+  }, 60000) // Cleanup every minute
 
   if (typeof generateId !== 'function') {
     throw new TypeError('genid option must be a function');
@@ -491,6 +513,15 @@ function session(options) {
     if (!req.sessionID) {
       debug('no SID sent, generating session');
       generate();
+      
+      // Adaptive maxAge logic for new sessions
+      if (adaptiveMaxAge && req.session) {
+        var now = Date.now()
+        var currentPath = originalPath
+        var routes = [{ path: currentPath, time: now }]
+        sessionRouteTracker.set(req.sessionID, routes)
+      }
+      
       next();
       return;
     }
@@ -516,6 +547,40 @@ function session(options) {
       } catch (e) {
         next(e)
         return
+      }
+
+      // Adaptive maxAge logic
+      if (adaptiveMaxAge && req.session) {
+        var now = Date.now()
+        var currentPath = originalPath
+        var routes = sessionRouteTracker.get(req.sessionID) || []
+        
+        // Clean old routes (older than 30 seconds)
+        routes = routes.filter(function(route) {
+          return now - route.time <= 30000
+        })
+        
+        // Check if this is a new route
+        var isNewRoute = !routes.some(function(route) {
+          return route.path === currentPath
+        })
+        
+        if (isNewRoute) {
+          routes.push({ path: currentPath, time: now })
+          sessionRouteTracker.set(req.sessionID, routes)
+          
+          // Check if 3+ different routes in 30 seconds
+          var uniqueRoutes = new Set(routes.map(function(route) { return route.path }))
+          if (uniqueRoutes.size >= 3) {
+            debug('High frequency access detected, extending session for 5 minutes')
+            req.session.touch()
+            // Extend maxAge by additional 5 minutes
+            if (req.session.cookie.originalMaxAge !== null) {
+              req.session.cookie.maxAge = req.session.cookie.originalMaxAge + 300000 // 5 minutes = 300000 ms
+              touched = true
+            }
+          }
+        }
       }
 
       next()
