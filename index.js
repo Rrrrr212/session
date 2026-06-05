@@ -21,6 +21,7 @@ var deprecate = require('depd')('express-session');
 var onHeaders = require('on-headers')
 var parseUrl = require('parseurl');
 var signature = require('cookie-signature')
+var uid = require('uid-safe').sync
 
 var Cookie = require('./session/cookie')
 var MemoryStore = require('./session/memory')
@@ -45,13 +46,6 @@ exports.Store = Store;
 exports.Cookie = Cookie;
 exports.Session = Session;
 exports.MemoryStore = MemoryStore;
-
-/**
- * Expose default session id generator.
- * @public
- */
-
-exports.generateSessionId = generateSessionId;
 
 /**
  * Warning message for `MemoryStore` usage in production.
@@ -236,18 +230,17 @@ function session(options) {
     // set-cookie
     onHeaders(res, function(){
       if (!req.session) {
-        debug('onHeaders: no session, skip cookie');
+        debug('no session');
         return;
       }
 
       if (!shouldSetCookie(req)) {
-        debug('onHeaders: shouldSetCookie returned false, skip cookie');
         return;
       }
 
       // only send secure cookies via https
       if (req.session.cookie.secure && !issecure(req, trustProxy)) {
-        debug('onHeaders: not secured, skip cookie');
+        debug('not secured');
         return;
       }
 
@@ -259,7 +252,6 @@ function session(options) {
 
       // set cookie
       try {
-        debug('onHeaders: setting cookie name=%s sessionID=%s', name, req.sessionID);
         setcookie(res, name, req.sessionID, secrets[0], req.session.cookie.data)
       } catch (err) {
         defer(next, err)
@@ -388,7 +380,6 @@ function session(options) {
       originalId = req.sessionID;
       originalHash = hash(req.session);
       wrapmethods(req.session);
-      debug('session generated: sessionID=%s, cookieId (from request)=%s', req.sessionID, cookieId);
     }
 
     // inflate the session
@@ -402,7 +393,6 @@ function session(options) {
       }
 
       wrapmethods(req.session)
-      debug('session inflated: sessionID=%s, cookieId=%s, hasUser=%s', req.sessionID, cookieId, !!sess.user);
     }
 
     function rewrapmethods (sess, callback) {
@@ -469,12 +459,9 @@ function session(options) {
         return false;
       }
 
-      if (cookieId !== req.sessionID) {
-        debug('shouldSave: sessionID changed (cookie=%s, current=%s), will save', cookieId, req.sessionID);
-        return true;
-      }
-
-      return !isSaved(req.session)
+      return !saveUninitializedSession && !savedHash && cookieId !== req.sessionID
+        ? isModified(req.session)
+        : !isSaved(req.session)
     }
 
     // determine if session should be touched
@@ -495,15 +482,9 @@ function session(options) {
         return false;
       }
 
-      if (cookieId !== req.sessionID) {
-        debug('shouldSetCookie: sessionID changed (cookie=%s, current=%s), will set cookie', cookieId, req.sessionID);
-        return true;
-      }
-
-      var setCookie = rollingSessions || req.session.cookie.expires != null && isModified(req.session);
-      debug('shouldSetCookie: sessionID unchanged, rolling=%s, expires=%s, modified=%s, setCookie=%s',
-        rollingSessions, req.session.cookie.expires != null, isModified(req.session), setCookie);
-      return setCookie;
+      return cookieId !== req.sessionID
+        ? saveUninitializedSession || isModified(req.session)
+        : rollingSessions || req.session.cookie.expires != null && isModified(req.session);
     }
 
     // generate a session if the browser doesn't send a sessionID
@@ -515,21 +496,21 @@ function session(options) {
     }
 
     // generate the session object
-    debug('fetching session from store: sessionID=%s', req.sessionID);
+    debug('fetching %s', req.sessionID);
     store.get(req.sessionID, function(err, sess){
       // error handling
       if (err && err.code !== 'ENOENT') {
-        debug('session fetch error: sessionID=%s, err=%j', req.sessionID, err);
+        debug('error %j', err);
         next(err)
         return
       }
 
       try {
         if (err || !sess) {
-          debug('session not found in store: sessionID=%s, generating new session (old session lost or expired)', req.sessionID);
+          debug('no session found')
           generate()
         } else {
-          debug('session found in store: sessionID=%s, hasUser=%s', req.sessionID, !!sess.user);
+          debug('session found')
           inflate(req, sess)
         }
       } catch (e) {
@@ -545,44 +526,12 @@ function session(options) {
 /**
  * Generate a session ID for a new session.
  *
- * @param {IncomingRequest} req
  * @return {String}
  * @private
  */
 
-function generateSessionId(req) {
-  var userId = 'anon';
-  var timestamp = Date.now().toString(36);
-
-  if (req) {
-    if (req.session && req.session.user) {
-      if (typeof req.session.user === 'string') {
-        userId = req.session.user;
-      } else if (req.session.user.id) {
-        userId = String(req.session.user.id);
-      } else if (req.session.user._id) {
-        userId = String(req.session.user._id);
-      }
-    } else if (req.user) {
-      if (typeof req.user === 'string') {
-        userId = req.user;
-      } else if (req.user.id) {
-        userId = String(req.user.id);
-      } else if (req.user._id) {
-        userId = String(req.user._id);
-      }
-    }
-  }
-
-  userId = userId.replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 32);
-
-  var random = crypto.randomBytes(8).toString('hex');
-
-  var sessionId = userId + '_' + timestamp + '_' + random;
-
-  debug('genid generated session ID: %s (userId=%s, ts=%s, rand=%s)', sessionId, userId, timestamp, random);
-
-  return sessionId;
+function generateSessionId() {
+  return uid(24);
 }
 
 /**
