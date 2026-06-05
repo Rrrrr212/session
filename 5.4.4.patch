@@ -1,0 +1,62 @@
+diff --git a/index.js b/index.js
+index 1a50931..8da93b2 100644
+--- a/index.js
++++ b/index.js
+@@ -91,7 +91,8 @@ function session(options) {
+   var cookieOptions = opts.cookie || {}
+ 
+   // get the session id generate function
+-  var generateId = opts.genid || generateSessionId
++  // MODIFIED: 默认使用自定义会话ID生成器，格式: SESSION-{timestamp}-{clientIP前8位哈希}
++  var generateId = opts.genid || generateSessionIdCustom;
+ 
+   // get the session cookie name
+   var name = opts.name || opts.key || 'connect.sid'
+@@ -534,6 +535,47 @@ function generateSessionId() {
+   return uid(24);
+ }
+ 
++/**
++ * MODIFIED: Custom generate session ID with format: SESSION-{timestamp}-{clientIP前8位哈希}-{randomBytes}
++ * Format: SESSION-{timestamp}-{clientIPHashPrefix}-{random}
++ * 使用 crypto.randomBytes 补足随机性确保唯一性，通过 req 获取客户端 IP
++ *
++ * @param {Object} req - Express request object
++ * @return {String} Custom formatted session ID
++ * @private
++ */
++
++function generateSessionIdCustom(req) {
++  var timestamp = Date.now();
++  var clientIP = getClientIP(req);
++  var ipHash = crypto.createHash('sha1').update(clientIP).digest('hex').slice(0, 8);
++  var randomBytes = crypto.randomBytes(16).toString('hex');
++  return 'SESSION-' + timestamp + '-' + ipHash + '-' + randomBytes;
++}
++
++/**
++ * MODIFIED: Helper to get client IP from request
++ * Extract client IP address considering X-Forwarded-For header and direct connection
++ *
++ * @param {Object} req - Express request object
++ * @return {String} Client IP address
++ * @private
++ */
++
++function getClientIP(req) {
++  var ip = req.ip ||
++          req.connection && req.connection.remoteAddress ||
++          req.socket && req.socket.remoteAddress ||
++          req.connection && req.connection.socket && req.connection.socket.remoteAddress ||
++          'unknown';
++
++  if (Array.isArray(req.ips) && req.ips.length) {
++    ip = req.ips[0];
++  }
++
++  return ip;
++}
++
+ /**
+  * Get the session ID cookie from request.
+  *
