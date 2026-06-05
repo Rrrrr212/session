@@ -526,36 +526,13 @@ function session(options) {
 /**
  * Generate a session ID for a new session.
  *
- * @param {Object} req The request object
  * @return {String}
  * @private
  */
 
-function generateSessionId(req) {
+function generateSessionId() {
   return uid(24);
 }
-
-/**
- * 自定义会话 ID 生成器示例（可通过 genid 选项配置）
- * 格式：SESSION-{timestamp}-{clientIP前8位哈希}-{随机字符}
- * 
- * 使用示例：
- * const session = require('express-session');
- * const crypto = require('crypto');
- * 
- * app.use(session({
- *   secret: 'your-secret-key',
- *   genid: customGenId // 配置自定义生成器
- * }));
- * 
- * function customGenId(req) {
- *   const timestamp = Date.now();
- *   const clientIP = req.ip || req.connection?.remoteAddress || 'unknown';
- *   const ipHash = crypto.createHash('md5').update(clientIP).digest('hex').slice(0, 8);
- *   const randomBytes = crypto.randomBytes(12).toString('hex');
- *   return `SESSION-${timestamp}-${ipHash}-${randomBytes}`;
- * }
- */
 
 /**
  * Get the session ID cookie from request.

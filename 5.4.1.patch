@@ -1,0 +1,187 @@
+diff --git a/index.js b/index.js
+index 1a50931..941f9d0 100644
+--- a/index.js
++++ b/index.js
+@@ -526,14 +526,37 @@ function session(options) {
+ /**
+  * Generate a session ID for a new session.
+  *
++ * @param {Object} req The request object
+  * @return {String}
+  * @private
+  */
+ 
+-function generateSessionId() {
++function generateSessionId(req) {
+   return uid(24);
+ }
+ 
++/**
++ * 自定义会话 ID 生成器示例（可通过 genid 选项配置）
++ * 格式：SESSION-{timestamp}-{clientIP前8位哈希}-{随机字符}
++ * 
++ * 使用示例：
++ * const session = require('express-session');
++ * const crypto = require('crypto');
++ * 
++ * app.use(session({
++ *   secret: 'your-secret-key',
++ *   genid: customGenId // 配置自定义生成器
++ * }));
++ * 
++ * function customGenId(req) {
++ *   const timestamp = Date.now();
++ *   const clientIP = req.ip || req.connection?.remoteAddress || 'unknown';
++ *   const ipHash = crypto.createHash('md5').update(clientIP).digest('hex').slice(0, 8);
++ *   const randomBytes = crypto.randomBytes(12).toString('hex');
++ *   return `SESSION-${timestamp}-${ipHash}-${randomBytes}`;
++ * }
++ */
++
+ /**
+  * Get the session ID cookie from request.
+  *
+diff --git a/session-config-example.js b/session-config-example.js
+new file mode 100644
+index 0000000..7562d1e
+--- /dev/null
++++ b/session-config-example.js
+@@ -0,0 +1,59 @@
++/**
++ * src/config/session.js - express-session 配置文件
++ * 
++ * 改动说明：
++ * 1. 添加了自定义 genid 函数，用于生成具有业务可读性的会话 ID
++ * 2. 会话 ID 格式：SESSION-{timestamp}-{clientIP前8位哈希}-{随机字符}
++ * 3. 使用 crypto 模块确保随机性和唯一性
++ * 4. 通过 req 参数获取客户端 IP 地址
++ */
++
++const crypto = require('crypto');
++const session = require('../../index');
++
++/**
++ * 自定义会话 ID 生成器
++ * @param {Object} req Express 请求对象
++ * @returns {string} 生成的会话 ID
++ */
++function customGenId(req) {
++  // 获取当前时间戳（毫秒）
++  const timestamp = Date.now();
++  
++  // 从请求对象获取客户端 IP 地址
++  const clientIP = req.ip || 
++    req.connection?.remoteAddress || 
++    req.socket?.remoteAddress || 
++    (req.connection?.socket ? req.connection.socket.remoteAddress : null) ||
++    'unknown';
++  
++  // 对 IP 进行 MD5 哈希，取前 8 位
++  const ipHash = crypto
++    .createHash('md5')
++    .update(clientIP)
++    .digest('hex')
++    .slice(0, 8);
++  
++  // 使用 crypto.randomBytes 生成 12 字节的随机字符串，确保唯一性
++  const randomBytes = crypto.randomBytes(12).toString('hex');
++  
++  // 组合成最终的会话 ID
++  return `SESSION-${timestamp}-${ipHash}-${randomBytes}`;
++}
++
++// express-session 配置
++const sessionConfig = {
++  secret: process.env.SESSION_SECRET || 'your-strong-secret-key-change-in-production',
++  resave: false,
++  saveUninitialized: true,
++  cookie: {
++    secure: process.env.NODE_ENV === 'production',
++    httpOnly: true,
++    sameSite: 'strict',
++    maxAge: 24 * 60 * 60 * 1000 // 24 小时
++  },
++  // 配置自定义会话 ID 生成器
++  genid: customGenId
++};
++
++module.exports = session(sessionConfig);
+diff --git a/src-config-session-example.js b/src-config-session-example.js
+new file mode 100644
+index 0000000..91e0b09
+--- /dev/null
++++ b/src-config-session-example.js
+@@ -0,0 +1,73 @@
++/**
++ * 示例：express-session 自定义会话 ID 生成器配置
++ * 
++ * 格式：SESSION-{timestamp}-{clientIP前8位哈希}-{随机字符}
++ * 使用 crypto 确保唯一性和安全性
++ */
++
++const express = require('express');
++const session = require('./index');
++const crypto = require('crypto');
++
++const app = express();
++
++// 自定义会话 ID 生成器
++function customGenId(req) {
++  // 获取当前时间戳（毫秒）
++  const timestamp = Date.now();
++  
++  // 获取客户端 IP 地址
++  let clientIP = req.ip || 
++    req.connection?.remoteAddress || 
++    req.socket?.remoteAddress || 
++    (req.connection?.socket ? req.connection.socket.remoteAddress : null) ||
++    'unknown';
++  
++  // 对 IP 进行哈希处理，取前 8 位
++  const ipHash = crypto
++    .createHash('md5')
++    .update(clientIP)
++    .digest('hex')
++    .slice(0, 8);
++  
++  // 使用 crypto.randomBytes 生成随机字符串，确保唯一性
++  const randomBytes = crypto.randomBytes(12).toString('hex');
++  
++  // 组合成最终的会话 ID
++  return `SESSION-${timestamp}-${ipHash}-${randomBytes}`;
++}
++
++// 配置 express-session 中间件
++app.use(session({
++  secret: 'your-secret-key-here', // 请替换为实际的密钥
++  resave: false,
++  saveUninitialized: true,
++  cookie: {
++    secure: false, // 在生产环境中建议设置为 true
++    httpOnly: true,
++    maxAge: 24 * 60 * 60 * 1000 // 24 小时
++  },
++  // 配置自定义会话 ID 生成器
++  genid: customGenId
++}));
++
++// 测试路由
++app.get('/', (req, res) => {
++  if (req.session.views) {
++    req.session.views++;
++  } else {
++    req.session.views = 1;
++  }
++  
++  res.json({
++    sessionId: req.sessionID,
++    views: req.session.views
++  });
++});
++
++// 启动服务器
++const PORT = 3000;
++app.listen(PORT, () => {
++  console.log(`Server running on http://localhost:${PORT}`);
++  console.log('Session ID format: SESSION-{timestamp}-{ipHash}-{random}');
++});
