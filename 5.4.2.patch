@@ -1,0 +1,58 @@
+diff --git a/src/config/session.js b/src/config/session.js
+new file mode 100644
+index 0000000..875a14d
+--- /dev/null
++++ b/src/config/session.js
+@@ -0,0 +1,52 @@
++'use strict';
++
++var crypto = require('crypto');
++var session = require('../../index');
++
++function getClientIp(req) {
++  var forwardedFor = req.headers && req.headers['x-forwarded-for'];
++  var firstForwardedIp = typeof forwardedFor === 'string'
++    ? forwardedFor.split(',')[0].trim()
++    : '';
++  var clientIp = req.ip
++    || firstForwardedIp
++    || (req.connection && req.connection.remoteAddress)
++    || (req.socket && req.socket.remoteAddress)
++    || 'unknown';
++
++  return clientIp.replace(/^::ffff:/, '');
++}
++
++function createClientIpHash(clientIp) {
++  var randomSalt = crypto.randomBytes(16).toString('hex');
++
++  return crypto
++    .createHash('sha256')
++    .update(clientIp)
++    .update(String(Date.now()))
++    .update(randomSalt)
++    .digest('hex')
++    .slice(0, 8)
++    .toUpperCase();
++}
++
++function generateSessionId(req) {
++  var timestamp = Date.now();
++  var clientIp = getClientIp(req);
++  var clientIpHashPrefix = createClientIpHash(clientIp);
++
++  // 改动点：通过 genid 自定义会话 ID，格式为 SESSION-{timestamp}-{clientIP前8位哈希}
++  return 'SESSION-' + timestamp + '-' + clientIpHashPrefix;
++}
++
++function createSessionMiddleware(options) {
++  var sessionOptions = Object.assign({}, options, {
++    genid: generateSessionId
++  });
++
++  // 改动点：保留原有 express-session 配置扩展能力，同时统一接入自定义 genid
++  return session(sessionOptions);
++}
++
++module.exports = createSessionMiddleware;
++module.exports.generateSessionId = generateSessionId;
