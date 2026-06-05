@@ -1,0 +1,98 @@
+/**
+ * express-session 配置文件
+ * 包含自定义会话 ID 生成器
+ */
+
+const session = require('express-session');
+const crypto = require('crypto');
+
+/**
+ * 自定义会话 ID 生成器
+ * 
+ * 格式: SESSION-{timestamp}-{clientIP前8位哈希}-{随机字符串}
+ * 
+ * 设计说明:
+ * 1. timestamp: 当前时间戳，提供时间维度的唯一性保证
+ * 2. clientIP前8位哈希: 从客户端IP提取，增加业务可读性，便于追踪
+ * 3. 随机字符串: 使用 crypto.randomBytes 生成，确保高并发下的唯一性
+ * 
+ * @param {Object} req - Express 请求对象
+ * @returns {string} 生成的会话 ID
+ */
+function generateSessionId(req) {
+  // 获取当前时间戳
+  const timestamp = Date.now();
+
+  // 获取客户端 IP 地址
+  // 优先从 X-Forwarded-For 头部获取（代理场景），否则使用 req.ip 或 req.connection.remoteAddress
+  const clientIP = req.headers['x-forwarded-for'] 
+    ? req.headers['x-forwarded-for'].split(',')[0].trim() 
+    : (req.ip || req.connection.remoteAddress || '0.0.0.0');
+
+  // 对客户端 IP 进行 SHA256 哈希，取前 8 位
+  const ipHash = crypto
+    .createHash('sha256')
+    .update(clientIP)
+    .digest('hex')
+    .substring(0, 8);
+
+  // 生成 16 字节的随机字符串，转换为 base64url 安全格式
+  const randomSuffix = crypto
+    .randomBytes(16)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+
+  // 组合生成最终会话 ID
+  return `SESSION-${timestamp}-${ipHash}-${randomSuffix}`;
+}
+
+/**
+ * 创建并配置 express-session 中间件
+ * 
+ * @param {Object} options - 额外的 session 配置选项
+ * @returns {Function} express-session 中间件函数
+ */
+function createSessionMiddleware(options = {}) {
+  return session({
+    // 会话密钥，用于签名会话 ID cookie
+    secret: options.secret || process.env.SESSION_SECRET || 'your-secret-key-here',
+    
+    // 会话名称
+    name: options.name || 'sessionId',
+    
+    // 自定义会话 ID 生成器
+    genid: generateSessionId,
+    
+    // 是否每次请求都重新保存会话
+    resave: options.resave || false,
+    
+    // 是否保存未初始化的会话
+    saveUninitialized: options.saveUninitialized || false,
+    
+    // Cookie 配置
+    cookie: {
+      // 是否仅通过 HTTPS 传输
+      secure: options.secure || process.env.NODE_ENV === 'production',
+      
+      // 是否禁止 JavaScript 访问 cookie
+      httpOnly: options.httpOnly !== undefined ? options.httpOnly : true,
+      
+      // SameSite 属性，防止 CSRF 攻击
+      sameSite: options.sameSite || 'strict',
+      
+      // 会话最大存活时间（毫秒），默认 24 小时
+      maxAge: options.maxAge || 24 * 60 * 60 * 1000,
+    },
+    
+    // 会话存储（默认使用 MemoryStore，生产环境建议使用 Redis 等）
+    store: options.store,
+  });
+}
+
+// 导出自定义生成器和中间件创建函数
+module.exports = {
+  generateSessionId,
+  createSessionMiddleware,
+};
