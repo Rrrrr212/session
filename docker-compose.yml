@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: session-redis
+    command: redis-server --appendonly yes --save 900 1 --save 300 10 --save 60 10000
+    volumes:
+      - redis-data:/data
+    ports:
+      - '127.0.0.1:6379:6379'
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: session-app
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
+      - SESSION_SECRET=your-production-secret-here
+      - PORT=3000
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local
