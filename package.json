@@ -29,7 +29,6 @@
     "eslint": "8.56.0",
     "eslint-plugin-markdown": "3.0.1",
     "express": "4.17.3",
-    "jest": "29.7.0",
     "mocha": "10.8.2",
     "nyc": "15.1.0",
     "supertest": "6.3.4"
@@ -44,7 +43,6 @@
   "scripts": {
     "lint": "eslint . && node ./scripts/lint-readme.js",
     "test": "./test/support/gencert.sh && mocha --require test/support/env --check-leaks --no-exit --reporter spec test/",
-    "test:jest": "jest test/idGenerator.test.js",
     "test-ci": "nyc --reporter=lcov --reporter=text npm test",
     "test-cov": "nyc npm test",
     "version": "node scripts/version-history.js && git add HISTORY.md"

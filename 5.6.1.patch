@@ -1,0 +1,330 @@
+diff --git a/examples/id-generator-example.js b/examples/id-generator-example.js
+new file mode 100644
+index 0000000..d11811d
+--- /dev/null
++++ b/examples/id-generator-example.js
+@@ -0,0 +1,49 @@
++'use strict';
++
++var express = require('express');
++var session = require('../index');
++var idGenerator = require('../src/utils/idGenerator');
++
++var app = express();
++
++// 示例 1: 使用默认的 generateId 函数
++app.use(session({
++  secret: 'your-secret-key',
++  resave: false,
++  saveUninitialized: true,
++  genid: idGenerator.generateId
++}));
++
++// 示例 2: 使用自定义的 id 生成器
++var customGen = idGenerator.createCustomGenerator({
++  prefix: 'myapp-sess',
++  includeTimestamp: true,
++  randomLength: 16
++});
++
++app.use(session({
++  secret: 'your-secret-key',
++  resave: false,
++  saveUninitialized: true,
++  genid: customGen
++}));
++
++app.get('/', function(req, res) {
++  if (req.session.views) {
++    req.session.views++;
++    res.setHeader('Content-Type', 'text/html');
++    res.write('<p>Session ID: ' + req.sessionID + '</p>');
++    res.write('<p>views: ' + req.session.views + '</p>');
++    res.write('<p>expires in: ' + (req.session.cookie.maxAge / 1000) + 's</p>');
++    res.end();
++  } else {
++    req.session.views = 1;
++    res.end('Welcome to the session demo! Refresh! Session ID: ' + req.sessionID);
++  }
++});
++
++var server = app.listen(3000, function() {
++  console.log('Example app listening on port ' + server.address().port);
++  console.log('Test using default generateId: visit http://localhost:' + server.address().port);
++  console.log('Test using custom generator: visit http://localhost:' + server.address().port);
++});
+diff --git a/package.json b/package.json
+index 3638779..a8553c6 100644
+--- a/package.json
++++ b/package.json
+@@ -29,6 +29,7 @@
+     "eslint": "8.56.0",
+     "eslint-plugin-markdown": "3.0.1",
+     "express": "4.17.3",
++    "jest": "29.7.0",
+     "mocha": "10.8.2",
+     "nyc": "15.1.0",
+     "supertest": "6.3.4"
+@@ -43,6 +44,7 @@
+   "scripts": {
+     "lint": "eslint . && node ./scripts/lint-readme.js",
+     "test": "./test/support/gencert.sh && mocha --require test/support/env --check-leaks --no-exit --reporter spec test/",
++    "test:jest": "jest test/idGenerator.test.js",
+     "test-ci": "nyc --reporter=lcov --reporter=text npm test",
+     "test-cov": "nyc npm test",
+     "version": "node scripts/version-history.js && git add HISTORY.md"
+diff --git a/src/utils/idGenerator.js b/src/utils/idGenerator.js
+new file mode 100644
+index 0000000..6745fb6
+--- /dev/null
++++ b/src/utils/idGenerator.js
+@@ -0,0 +1,57 @@
++'use strict';
++
++var crypto = require('crypto');
++
++/**
++ * Generate a random session ID
++ * @returns {string} Random session ID
++ */
++function generateId() {
++  return crypto.randomBytes(24).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
++}
++
++/**
++ * Create a custom ID generator function
++ * @param {Object} options - Options for the custom generator
++ * @param {string} [options.prefix] - Prefix for the ID
++ * @param {boolean} [options.includeTimestamp] - Whether to include timestamp in the ID
++ * @param {number} [options.randomLength] - Length of the random part of the ID
++ * @returns {Function} Custom ID generator function
++ */
++function createCustomGenerator(options) {
++  var opts = options || {};
++  var prefix = opts.prefix || '';
++  var includeTimestamp = opts.includeTimestamp !== false;
++  var randomLength = opts.randomLength || 16;
++
++  if (typeof prefix !== 'string') {
++    throw new TypeError('prefix must be a string');
++  }
++
++  if (typeof randomLength !== 'number' || randomLength < 0) {
++    throw new TypeError('randomLength must be a positive number');
++  }
++
++  return function customGenId() {
++    var parts = [];
++
++    if (prefix) {
++      parts.push(prefix);
++    }
++
++    if (includeTimestamp) {
++      parts.push(Date.now().toString(36));
++    }
++
++    if (randomLength > 0) {
++      parts.push(crypto.randomBytes(Math.ceil(randomLength * 3 / 4)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '').slice(0, randomLength));
++    }
++
++    return parts.join('_');
++  };
++}
++
++module.exports = {
++  generateId: generateId,
++  createCustomGenerator: createCustomGenerator
++};
+diff --git a/test/idGenerator.test.js b/test/idGenerator.test.js
+new file mode 100644
+index 0000000..a490ad0
+--- /dev/null
++++ b/test/idGenerator.test.js
+@@ -0,0 +1,186 @@
++'use strict';
++
++const { generateId, createCustomGenerator } = require('../src/utils/idGenerator');
++
++describe('idGenerator', () => {
++  describe('generateId', () => {
++    it('should generate a string ID', () => {
++      const id = generateId();
++      expect(typeof id).toBe('string');
++      expect(id.length).toBeGreaterThan(0);
++    });
++
++    it('should generate unique IDs', () => {
++      const ids = new Set();
++      const iterations = 1000;
++      
++      for (let i = 0; i < iterations; i++) {
++        const id = generateId();
++        expect(ids.has(id)).toBe(false);
++        ids.add(id);
++      }
++      
++      expect(ids.size).toBe(iterations);
++    });
++
++    it('should generate IDs with URL-safe characters only', () => {
++      const id = generateId();
++      expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
++    });
++
++    it('should generate IDs of approximately correct length', () => {
++      const id = generateId();
++      // 24 bytes base64 encoded should be around 32 characters (24 * 4/3 = 32)
++      expect(id.length).toBeGreaterThanOrEqual(30);
++      expect(id.length).toBeLessThanOrEqual(34);
++    });
++  });
++
++  describe('createCustomGenerator', () => {
++    it('should create a generator function', () => {
++      const gen = createCustomGenerator();
++      expect(typeof gen).toBe('function');
++    });
++
++    it('should generate IDs with custom prefix', () => {
++      const prefix = 'myapp';
++      const gen = createCustomGenerator({ prefix });
++      const id = gen();
++      
++      expect(id.startsWith(prefix)).toBe(true);
++    });
++
++    it('should generate IDs with timestamp', () => {
++      const gen = createCustomGenerator({ includeTimestamp: true });
++      const id = gen();
++      
++      const parts = id.split('_');
++      // Should have at least timestamp and random parts
++      expect(parts.length).toBeGreaterThanOrEqual(2);
++    });
++
++    it('should generate IDs without timestamp when requested', () => {
++      const gen = createCustomGenerator({ includeTimestamp: false, prefix: 'test', randomLength: 10 });
++      const id = gen();
++      
++      const parts = id.split('_');
++      // Should have only prefix and random parts
++      expect(parts.length).toBe(2);
++      expect(parts[0]).toBe('test');
++      expect(parts[1].length).toBe(10);
++    });
++
++    it('should generate IDs with specified random length', () => {
++      const randomLength = 8;
++      const gen = createCustomGenerator({ 
++        prefix: 'test', 
++        includeTimestamp: false, 
++        randomLength 
++      });
++      const id = gen();
++      
++      const parts = id.split('_');
++      expect(parts[1].length).toBe(randomLength);
++    });
++
++    it('should generate unique IDs with custom rules', () => {
++      const gen = createCustomGenerator({ prefix: 'test', includeTimestamp: true, randomLength: 16 });
++      const ids = new Set();
++      const iterations = 1000;
++      
++      for (let i = 0; i < iterations; i++) {
++        const id = gen();
++        expect(ids.has(id)).toBe(false);
++        ids.add(id);
++      }
++      
++      expect(ids.size).toBe(iterations);
++    });
++
++    it('should generate IDs with URL-safe characters only', () => {
++      const gen = createCustomGenerator({ prefix: 'test-app', includeTimestamp: true, randomLength: 16 });
++      const id = gen();
++      
++      expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
++    });
++  });
++
++  describe('boundary conditions', () => {
++    it('should handle empty prefix', () => {
++      const gen = createCustomGenerator({ prefix: '' });
++      const id = gen();
++      
++      expect(typeof id).toBe('string');
++      expect(id.length).toBeGreaterThan(0);
++    });
++
++    it('should handle no options', () => {
++      const gen = createCustomGenerator();
++      const id = gen();
++      
++      expect(typeof id).toBe('string');
++      expect(id.length).toBeGreaterThan(0);
++    });
++
++    it('should handle zero randomLength', () => {
++      const gen = createCustomGenerator({ prefix: 'test', includeTimestamp: true, randomLength: 0 });
++      const id = gen();
++      
++      const parts = id.split('_');
++      expect(parts.length).toBe(2); // prefix + timestamp
++    });
++
++    it('should throw error for invalid prefix type', () => {
++      expect(() => {
++        createCustomGenerator({ prefix: 123 });
++      }).toThrow(TypeError);
++    });
++
++    it('should throw error for negative randomLength', () => {
++      expect(() => {
++        createCustomGenerator({ randomLength: -1 });
++      }).toThrow(TypeError);
++    });
++
++    it('should throw error for invalid randomLength type', () => {
++      expect(() => {
++        createCustomGenerator({ randomLength: '10' });
++      }).toThrow(TypeError);
++    });
++  });
++
++  describe('integration with session middleware', () => {
++    it('should be usable as genid in session middleware', () => {
++      const customGen = createCustomGenerator({ prefix: 'session', includeTimestamp: true });
++      
++      // Verify it can be called like genid function
++      const id = customGen();
++      
++      expect(typeof id).toBe('string');
++      expect(id.startsWith('session')).toBe(true);
++    });
++
++    it('should generate different IDs in quick succession', () => {
++      const gen = createCustomGenerator({ includeTimestamp: true, randomLength: 16 });
++      
++      const id1 = gen();
++      const id2 = gen();
++      
++      expect(id1).not.toBe(id2);
++    });
++
++    it('should work with null or undefined options', () => {
++      const gen1 = createCustomGenerator(null);
++      const gen2 = createCustomGenerator(undefined);
++      
++      expect(typeof gen1).toBe('function');
++      expect(typeof gen2).toBe('function');
++      
++      const id1 = gen1();
++      const id2 = gen2();
++      
++      expect(typeof id1).toBe('string');
++      expect(typeof id2).toBe('string');
++    });
++  });
++});
