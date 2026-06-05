@@ -1,0 +1,159 @@
+diff --git a/Dockerfile b/Dockerfile
+new file mode 100644
+index 0000000..70eab80
+--- /dev/null
++++ b/Dockerfile
+@@ -0,0 +1,13 @@
++FROM node:18-alpine
++
++WORKDIR /app
++
++COPY package.json ./
++
++RUN npm install --production
++
++COPY . .
++
++EXPOSE 3000
++
++CMD ["node", "src/index.js"]
+\ No newline at end of file
+diff --git a/docker-compose.yml b/docker-compose.yml
+new file mode 100644
+index 0000000..5b844fb
+--- /dev/null
++++ b/docker-compose.yml
+@@ -0,0 +1,41 @@
++version: '3.8'
++
++services:
++  redis:
++    image: redis:7-alpine
++    container_name: session-redis
++    command: redis-server --appendonly yes --save 900 1 --save 300 10 --save 60 10000
++    volumes:
++      - redis-data:/data
++    ports:
++      - '127.0.0.1:6379:6379'
++    restart: unless-stopped
++    healthcheck:
++      test: ['CMD', 'redis-cli', 'ping']
++      interval: 10s
++      timeout: 5s
++      retries: 5
++
++  app:
++    build:
++      context: .
++      dockerfile: Dockerfile
++    container_name: session-app
++    ports:
++      - '3000:3000'
++    environment:
++      - NODE_ENV=production
++      - REDIS_HOST=redis
++      - REDIS_PORT=6379
++      - REDIS_PASSWORD=
++      - REDIS_DB=0
++      - SESSION_SECRET=your-production-secret-here
++      - PORT=3000
++    depends_on:
++      redis:
++        condition: service_healthy
++    restart: unless-stopped
++
++volumes:
++  redis-data:
++    driver: local
+\ No newline at end of file
+diff --git a/package.json b/package.json
+index 3638779..af61623 100644
+--- a/package.json
++++ b/package.json
+@@ -14,10 +14,13 @@
+   },
+   "license": "MIT",
+   "dependencies": {
++    "connect-redis": "^7.1.0",
+     "cookie": "~0.7.2",
+     "cookie-signature": "~1.0.7",
+     "debug": "~2.6.9",
+     "depd": "~2.0.0",
++    "express": "^4.18.2",
++    "ioredis": "^5.3.2",
+     "on-headers": "~1.1.0",
+     "parseurl": "~1.3.3",
+     "safe-buffer": "~5.2.1",
+@@ -28,7 +31,6 @@
+     "cookie-parser": "1.4.6",
+     "eslint": "8.56.0",
+     "eslint-plugin-markdown": "3.0.1",
+-    "express": "4.17.3",
+     "mocha": "10.8.2",
+     "nyc": "15.1.0",
+     "supertest": "6.3.4"
+diff --git a/src/index.js b/src/index.js
+new file mode 100644
+index 0000000..1337ddd
+--- /dev/null
++++ b/src/index.js
+@@ -0,0 +1,58 @@
++'use strict';
++
++var express = require('express');
++var session = require('../');
++var RedisStore = require('connect-redis').default;
++var Redis = require('ioredis');
++
++var app = express();
++
++var redisClient = new Redis({
++  host: process.env.REDIS_HOST || '127.0.0.1',
++  port: Number(process.env.REDIS_PORT) || 6379,
++  password: process.env.REDIS_PASSWORD || undefined,
++  db: Number(process.env.REDIS_DB) || 0,
++  retryStrategy: function (times) {
++    return Math.min(times * 50, 2000);
++  }
++});
++
++redisClient.on('error', function (err) {
++  console.error('Redis connection error:', err);
++});
++
++redisClient.on('connect', function () {
++  console.log('Redis connected successfully');
++});
++
++app.use(session({
++  store: new RedisStore({ client: redisClient }),
++  secret: process.env.SESSION_SECRET || 'change-me-in-production',
++  name: 'connect.sid',
++  resave: false,
++  saveUninitialized: false,
++  cookie: {
++    secure: process.env.NODE_ENV === 'production',
++    httpOnly: true,
++    maxAge: 1000 * 60 * 60 * 24
++  }
++}));
++
++app.get('/', function (req, res) {
++  if (req.session.views) {
++    req.session.views++;
++  } else {
++    req.session.views = 1;
++  }
++  res.json({
++    sessionId: req.sessionID,
++    views: req.session.views
++  });
++});
++
++var port = process.env.PORT || 3000;
++app.listen(port, function () {
++  console.log('Server listening on port ' + port);
++});
++
++module.exports = app;
+\ No newline at end of file
